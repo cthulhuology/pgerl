@@ -212,7 +212,6 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 
 static ERL_NIF_TERM pgerl_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
 	unsigned int conninfo_size;
-	unsigned int schema_size;
 
 	if (argc != 2)  
 		return enif_make_badarg(env);
@@ -229,16 +228,8 @@ static ERL_NIF_TERM pgerl_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 		return enif_make_badarg(env);
 
 
-	if (!enif_get_list_length(env, argv[1], &schema_size))
-		return enif_make_badarg(env);
-
-	if (schema_size == 0)
-		return enif_make_badarg(env);
-	
-	char schema[schema_size+1];
-	memset(schema,0,schema_size+1);
-
-	if (0 >= enif_get_string(env, argv[1], schema, sizeof(schema), ERL_NIF_UTF8))
+	char schema[256];
+	if (!enif_get_atom(env, argv[1], schema, sizeof(schema), ERL_NIF_UTF8))
 		return enif_make_badarg(env);
 
 	Pgerl_connection* res = (Pgerl_connection*)enif_alloc_resource(Pgerl_connection_resource,sizeof(Pgerl_connection));

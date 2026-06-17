@@ -32,8 +32,8 @@
 start() ->
 	erlang:load_nif("./pgerl_nif", 0).
 
-%% connect to postgres, returns a connection resource or {error, Reason}
-%% NB: nif_funcs must register this as arity 2, not 1
+%% connect to postgres; Schema is an atom matching the pg schema name
+%% returns a connection resource or {error, Reason}
 init(_ConnInfo, _Schema) ->
 	error(nif_not_loaded).
 
@@ -123,7 +123,7 @@ conninfo() ->
 
 setup() ->
 	ok = pgerl:start(),
-	Conn = pgerl:init(conninfo(), "pgtest"),
+	Conn = pgerl:init(conninfo(), pgtest),
 	pgerl:query(Conn, <<"CREATE SCHEMA IF NOT EXISTS pgtest">>, {}),
 	Conn.
 
@@ -141,19 +141,19 @@ tests(_) ->
 	[
 	 %% connect and verify status
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
+		Conn = pgerl:init(conninfo(), public),
 		?assertNotMatch({ error, _ }, Conn),
 		?assertEqual(ok, pgerl:status(Conn))
 	 end),
 
 	 %% bad conninfo returns an error tuple
 	 ?_test(begin
-		{ error, _ } = pgerl:init("host=localhost port=0 user=nobody dbname=noexist", "public")
+		{ error, _ } = pgerl:init("host=localhost port=0 user=nobody dbname=noexist", public)
 	 end),
 
 	 %% simple query with no params returns a result resource
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
+		Conn = pgerl:init(conninfo(), public),
 		Result = pgerl:query(Conn, <<"SELECT 1 AS n">>, {}),
 		?assertNotMatch({ error, _ }, Result),
 		?assertEqual(1, pgerl:ntuples(Result)),
@@ -165,7 +165,7 @@ tests(_) ->
 
 	 %% binary parameter passed as $1
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
+		Conn = pgerl:init(conninfo(), public),
 		Result = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { <<"hello">> }),
 		?assertNotMatch({ error, _ }, Result),
 		?assertEqual(<<"hello">>, pgerl:value(Result, 0, 0))
@@ -173,7 +173,7 @@ tests(_) ->
 
 	 %% integer parameter passed as $1 comes back as text
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
+		Conn = pgerl:init(conninfo(), public),
 		Result = pgerl:query(Conn, <<"SELECT $1::integer AS n">>, { 42 }),
 		?assertNotMatch({ error, _ }, Result),
 		?assertEqual(<<"42">>, pgerl:value(Result, 0, 0))
@@ -181,7 +181,7 @@ tests(_) ->
 
 	 %% empty list [] is treated as SQL NULL
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
+		Conn = pgerl:init(conninfo(), public),
 		Result = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { [] }),
 		?assertNotMatch({ error, _ }, Result),
 		?assertEqual(1, pgerl:is_null(Result, 0, 0))
@@ -189,7 +189,7 @@ tests(_) ->
 
 	 %% multiple mixed parameters; check column count and names
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
+		Conn = pgerl:init(conninfo(), public),
 		Result = pgerl:query(Conn, <<"SELECT $1::text AS name, $2::integer AS age">>, { <<"alice">>, 30 }),
 		?assertNotMatch({ error, _ }, Result),
 		?assertEqual(2, pgerl:nfields(Result)),
@@ -201,7 +201,7 @@ tests(_) ->
 
 	 %% atom null maps to SQL NULL
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
+		Conn = pgerl:init(conninfo(), public),
 		Result = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { null }),
 		?assertNotMatch({ error, _ }, Result),
 		?assertEqual(1, pgerl:is_null(Result, 0, 0))
@@ -209,7 +209,7 @@ tests(_) ->
 
 	 %% atom other than null passed as string literal
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
+		Conn = pgerl:init(conninfo(), public),
 		Result = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { hello }),
 		?assertNotMatch({ error, _ }, Result),
 		?assertEqual(<<"hello">>, pgerl:value(Result, 0, 0))
@@ -217,7 +217,7 @@ tests(_) ->
 
 	 %% { blob, Binary } passed as binary format
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
+		Conn = pgerl:init(conninfo(), public),
 		Result = pgerl:query(Conn, <<"SELECT $1::bytea AS val">>, { { blob, <<1,2,3,4>> } }),
 		?assertNotMatch({ error, _ }, Result),
 		?assertEqual(0, pgerl:is_null(Result, 0, 0))
@@ -225,7 +225,7 @@ tests(_) ->
 
 	 %% procs/2 returns a list of {Name, Arity} for the schema
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "pgtest"),
+		Conn = pgerl:init(conninfo(), pgtest),
 		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgtest.add(a integer, b integer) RETURNS integer AS $$ BEGIN RETURN a + b; END; $$ LANGUAGE plpgsql">>, {}),
 		Ps = pgerl:procs(Conn, pgtest),
 		?assert(is_list(Ps)),
@@ -234,7 +234,7 @@ tests(_) ->
 
 	 %% generate/2 loads a module named after the schema with one wrapper per proc
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "pgtest"),
+		Conn = pgerl:init(conninfo(), pgtest),
 		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgtest.hello() RETURNS text AS $$ BEGIN RETURN 'hello'; END; $$ LANGUAGE plpgsql">>, {}),
 		ok = pgerl:generate(Conn, pgtest),
 		Result = pgtest:hello(Conn),
@@ -243,7 +243,7 @@ tests(_) ->
 
 	 %% generated wrapper passes arguments correctly
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "pgtest"),
+		Conn = pgerl:init(conninfo(), pgtest),
 		Result = pgtest:add(Conn, <<"3">>, <<"5">>),
 		?assertEqual(<<"8">>, pgerl:value(Result, 0, 0))
 	 end)
