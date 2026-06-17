@@ -22,7 +22,7 @@
 -module(pgerl).
 -author({ "David J Goehrig", "dave@dloh.org" }).
 -copyright(<<"© 2026 David J. Goehrig"/utf8>>).
--export([ start/0, init/2, status/1, query/3 ]).
+-export([ start/0, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3 ]).
 
 %%%-----------------------------------------------------------------------------
 %%% Public API
@@ -42,8 +42,28 @@ status(_Conn) ->
 	error(nif_not_loaded).
 
 %% execute a parameterized query; Params is a tuple of binaries/integers/[]
-%% returns {ok, Rows} or {error, Reason}
+%% returns a PGresult resource
 query(_Conn, _Command, _Params) ->
+	error(nif_not_loaded).
+
+%% number of rows in a PGresult resource
+ntuples(_Result) ->
+	error(nif_not_loaded).
+
+%% number of columns in a PGresult resource
+nfields(_Result) ->
+	error(nif_not_loaded).
+
+%% column name at index Col (0-based)
+fname(_Result, _Col) ->
+	error(nif_not_loaded).
+
+%% cell value at Row, Col (0-based), returned as binary
+value(_Result, _Row, _Col) ->
+	error(nif_not_loaded).
+
+%% true if the cell at Row, Col is SQL NULL
+is_null(_Result, _Row, _Col) ->
 	error(nif_not_loaded).
 
 -ifdef(TEST).
@@ -82,39 +102,52 @@ tests(_) ->
 		{ error, _ } = pgerl:init("host=localhost port=0 user=nobody dbname=noexist", "public")
 	 end),
 
-	 %% simple query with no parameters returns a list of rows
+	 %% simple query with no params returns a result resource
 	 ?_test(begin
 		Conn = pgerl:init(conninfo(), "public"),
-		{ ok, Rows } = pgerl:query(Conn, <<"SELECT 1 AS n">>, {}),
-		?assert(is_list(Rows))
+		Result = pgerl:query(Conn, <<"SELECT 1 AS n">>, {}),
+		?assertNotMatch({ error, _ }, Result),
+		?assertEqual(1, pgerl:ntuples(Result)),
+		?assertEqual(1, pgerl:nfields(Result)),
+		?assertEqual(<<"n">>, pgerl:fname(Result, 0)),
+		?assertEqual(<<"1">>, pgerl:value(Result, 0, 0)),
+		?assertEqual(false, pgerl:is_null(Result, 0, 0))
 	 end),
 
 	 %% binary parameter passed as $1
 	 ?_test(begin
 		Conn = pgerl:init(conninfo(), "public"),
-		{ ok, Rows } = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { <<"hello">> }),
-		?assert(is_list(Rows))
+		Result = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { <<"hello">> }),
+		?assertNotMatch({ error, _ }, Result),
+		?assertEqual(<<"hello">>, pgerl:value(Result, 0, 0))
 	 end),
 
-	 %% integer parameter passed as $1
+	 %% integer parameter passed as $1 comes back as text
 	 ?_test(begin
 		Conn = pgerl:init(conninfo(), "public"),
-		{ ok, Rows } = pgerl:query(Conn, <<"SELECT $1::integer AS n">>, { 42 }),
-		?assert(is_list(Rows))
+		Result = pgerl:query(Conn, <<"SELECT $1::integer AS n">>, { 42 }),
+		?assertNotMatch({ error, _ }, Result),
+		?assertEqual(<<"42">>, pgerl:value(Result, 0, 0))
 	 end),
 
 	 %% empty list [] is treated as SQL NULL
 	 ?_test(begin
 		Conn = pgerl:init(conninfo(), "public"),
-		{ ok, Rows } = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { [] }),
-		?assert(is_list(Rows))
+		Result = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { [] }),
+		?assertNotMatch({ error, _ }, Result),
+		?assertEqual(true, pgerl:is_null(Result, 0, 0))
 	 end),
 
-	 %% multiple mixed parameters
+	 %% multiple mixed parameters; check column count and names
 	 ?_test(begin
 		Conn = pgerl:init(conninfo(), "public"),
-		{ ok, Rows } = pgerl:query(Conn, <<"SELECT $1::text AS name, $2::integer AS age">>, { <<"alice">>, 30 }),
-		?assert(is_list(Rows))
+		Result = pgerl:query(Conn, <<"SELECT $1::text AS name, $2::integer AS age">>, { <<"alice">>, 30 }),
+		?assertNotMatch({ error, _ }, Result),
+		?assertEqual(2, pgerl:nfields(Result)),
+		?assertEqual(<<"name">>, pgerl:fname(Result, 0)),
+		?assertEqual(<<"age">>, pgerl:fname(Result, 1)),
+		?assertEqual(<<"alice">>, pgerl:value(Result, 0, 0)),
+		?assertEqual(<<"30">>, pgerl:value(Result, 0, 1))
 	 end)
 	].
 
