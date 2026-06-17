@@ -111,7 +111,7 @@ tests(_) ->
 		?assertEqual(1, pgerl:nfields(Result)),
 		?assertEqual(<<"n">>, pgerl:fname(Result, 0)),
 		?assertEqual(<<"1">>, pgerl:value(Result, 0, 0)),
-		?assertEqual(false, pgerl:is_null(Result, 0, 0))
+		?assertEqual(0, pgerl:is_null(Result, 0, 0))
 	 end),
 
 	 %% binary parameter passed as $1
@@ -135,7 +135,7 @@ tests(_) ->
 		Conn = pgerl:init(conninfo(), "public"),
 		Result = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { [] }),
 		?assertNotMatch({ error, _ }, Result),
-		?assertEqual(true, pgerl:is_null(Result, 0, 0))
+		?assertEqual(1, pgerl:is_null(Result, 0, 0))
 	 end),
 
 	 %% multiple mixed parameters; check column count and names
