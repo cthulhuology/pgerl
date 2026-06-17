@@ -184,8 +184,12 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 		return enif_make_badarg(env);
 	}
 
+	char cmd[command.size + 1];
+	memcpy(cmd, command.data, command.size);
+	cmd[command.size] = '\0';
+
 	Pgerl_result* result = (Pgerl_result*)enif_alloc_resource(Pgerl_result_resource,sizeof(Pgerl_result));
-	result->res = PQexecParams(pgconn->conn,command.data,nparams,NULL,params,lengths,formats,0);
+	result->res = PQexecParams(pgconn->conn,cmd,nparams,NULL,params,lengths,formats,0);
 
 	int status = 0;
 	switch(status = PQresultStatus(result->res)) {
