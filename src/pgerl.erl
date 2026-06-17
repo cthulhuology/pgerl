@@ -22,7 +22,7 @@
 -module(pgerl).
 -author({ "David J Goehrig", "dave@dloh.org" }).
 -copyright(<<"© 2026 David J. Goehrig"/utf8>>).
--export([ start/0, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3, procs/2, generate/3 ]).
+-export([ start/0, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3, procs/2, generate/2 ]).
 
 %%%-----------------------------------------------------------------------------
 %%% Public API
@@ -66,16 +66,16 @@ value(_Result, _Row, _Col) ->
 is_null(_Result, _Row, _Col) ->
 	error(nif_not_loaded).
 
-%% list all stored procedures in Schema, returns [{ Name, Arity }]
+%% list all stored procedures in Schema (atom), returns [{ Name, Arity }]
 procs(Conn, Schema) ->
-	Result = query(Conn, <<"SELECT proc.proname, proc.pronargs FROM pg_proc proc JOIN pg_namespace namesp ON proc.pronamespace = namesp.oid WHERE namesp.nspname = $1 ORDER BY proc.proname">>, { Schema }),
+	Result = query(Conn, <<"SELECT proc.proname, proc.pronargs FROM pg_proc proc JOIN pg_namespace namesp ON proc.pronamespace = namesp.oid WHERE namesp.nspname = $1 ORDER BY proc.proname">>, { atom_to_binary(Schema, utf8) }),
 	decode_procs(Result, ntuples(Result), 0, []).
 
-%% generate and load an Erlang module with one wrapper per stored procedure
-generate(Conn, Schema, Module) ->
-	Forms = module_forms(Module, procs(Conn, Schema)),
-	{ok, Module, Binary} = compile:forms(Forms, []),
-	{module, Module} = code:load_binary(Module, atom_to_list(Module) ++ ".erl", Binary),
+%% generate and load an Erlang module named Schema wrapping all procs in that schema
+generate(Conn, Schema) ->
+	Forms = module_forms(Schema, procs(Conn, Schema)),
+	{ok, Schema, Binary} = compile:forms(Forms, []),
+	{module, Schema} = code:load_binary(Schema, atom_to_list(Schema) ++ ".erl", Binary),
 	ok.
 
 %%%-----------------------------------------------------------------------------
@@ -122,9 +122,13 @@ conninfo() ->
 	lists:flatten(io_lib:format("host=~s port=~s user=~s dbname=~s", [ Host, Port, User, DB ])).
 
 setup() ->
-	ok = pgerl:start().
+	ok = pgerl:start(),
+	Conn = pgerl:init(conninfo(), "pgtest"),
+	pgerl:query(Conn, <<"CREATE SCHEMA IF NOT EXISTS pgtest">>, {}),
+	Conn.
 
-cleanup(_) ->
+cleanup(Conn) ->
+	pgerl:query(Conn, <<"DROP SCHEMA IF EXISTS pgtest CASCADE">>, {}),
 	ok.
 
 pgerl_test_() ->
@@ -221,26 +225,26 @@ tests(_) ->
 
 	 %% procs/2 returns a list of {Name, Arity} for the schema
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
-		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgerl_test_add(a integer, b integer) RETURNS integer AS $$ BEGIN RETURN a + b; END; $$ LANGUAGE plpgsql">>, {}),
-		Ps = pgerl:procs(Conn, <<"public">>),
+		Conn = pgerl:init(conninfo(), "pgtest"),
+		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgtest.add(a integer, b integer) RETURNS integer AS $$ BEGIN RETURN a + b; END; $$ LANGUAGE plpgsql">>, {}),
+		Ps = pgerl:procs(Conn, pgtest),
 		?assert(is_list(Ps)),
-		?assert(lists:keymember(pgerl_test_add, 1, Ps))
+		?assert(lists:keymember(add, 1, Ps))
 	 end),
 
-	 %% generate/3 loads a module with wrapper functions for each proc
+	 %% generate/2 loads a module named after the schema with one wrapper per proc
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
-		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgerl_test_hello() RETURNS text AS $$ BEGIN RETURN 'hello'; END; $$ LANGUAGE plpgsql">>, {}),
-		ok = pgerl:generate(Conn, <<"public">>, pgtest),
-		Result = pgtest:pgerl_test_hello(Conn),
+		Conn = pgerl:init(conninfo(), "pgtest"),
+		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgtest.hello() RETURNS text AS $$ BEGIN RETURN 'hello'; END; $$ LANGUAGE plpgsql">>, {}),
+		ok = pgerl:generate(Conn, pgtest),
+		Result = pgtest:hello(Conn),
 		?assertEqual(<<"hello">>, pgerl:value(Result, 0, 0))
 	 end),
 
 	 %% generated wrapper passes arguments correctly
 	 ?_test(begin
-		Conn = pgerl:init(conninfo(), "public"),
-		Result = pgtest:pgerl_test_add(Conn, <<"3">>, <<"5">>),
+		Conn = pgerl:init(conninfo(), "pgtest"),
+		Result = pgtest:add(Conn, <<"3">>, <<"5">>),
 		?assertEqual(<<"8">>, pgerl:value(Result, 0, 0))
 	 end)
 	].
