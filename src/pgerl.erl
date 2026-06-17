@@ -22,7 +22,7 @@
 -module(pgerl).
 -author({ "David J Goehrig", "dave@dloh.org" }).
 -copyright(<<"© 2026 David J. Goehrig"/utf8>>).
--export([ start/0, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3 ]).
+-export([ start/0, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3, procs/2, generate/3 ]).
 
 %%%-----------------------------------------------------------------------------
 %%% Public API
@@ -65,6 +65,51 @@ value(_Result, _Row, _Col) ->
 %% true if the cell at Row, Col is SQL NULL
 is_null(_Result, _Row, _Col) ->
 	error(nif_not_loaded).
+
+%% list all stored procedures in Schema, returns [{ Name, Arity }]
+procs(Conn, Schema) ->
+	Result = query(Conn, <<"SELECT proc.proname, proc.pronargs FROM pg_proc proc JOIN pg_namespace namesp ON proc.pronamespace = namesp.oid WHERE namesp.nspname = $1 ORDER BY proc.proname">>, { Schema }),
+	decode_procs(Result, ntuples(Result), 0, []).
+
+%% generate and load an Erlang module with one wrapper per stored procedure
+generate(Conn, Schema, Module) ->
+	Forms = module_forms(Module, procs(Conn, Schema)),
+	{ok, Module, Binary} = compile:forms(Forms, []),
+	{module, Module} = code:load_binary(Module, atom_to_list(Module) ++ ".erl", Binary),
+	ok.
+
+%%%-----------------------------------------------------------------------------
+%%% Private
+%%%-----------------------------------------------------------------------------
+
+decode_procs(_Result, N, N, Acc) ->
+	lists:reverse(Acc);
+decode_procs(Result, N, I, Acc) ->
+	Name = binary_to_atom(value(Result, I, 0), utf8),
+	Arity = binary_to_integer(value(Result, I, 1)),
+	decode_procs(Result, N, I+1, [{ Name, Arity } | Acc]).
+
+module_forms(Module, Procs) ->
+	Exports = [ {Name, Arity+1} || {Name, Arity} <- Procs ],
+	[
+		{attribute, 1, module, Module},
+		{attribute, 1, export, Exports}
+		| [ proc_form(Name, Arity) || {Name, Arity} <- Procs ]
+	].
+
+proc_form(Name, Arity) ->
+	ConnVar = {var, 1, 'Conn'},
+	ArgVars = [ {var, 1, list_to_atom("Arg" ++ integer_to_list(I))} || I <- lists:seq(1, Arity) ],
+	SQL = proc_sql(Name, Arity),
+	Call = {call, 1,
+		{remote, 1, {atom, 1, pgerl}, {atom, 1, query}},
+		[ConnVar, SQL, {tuple, 1, ArgVars}]},
+	{function, 1, Name, Arity+1, [{clause, 1, [ConnVar | ArgVars], [], [Call]}]}.
+
+proc_sql(Name, Arity) ->
+	Placeholders = string:join([ "$" ++ integer_to_list(I) || I <- lists:seq(1, Arity) ], ","),
+	SQL = "SELECT " ++ atom_to_list(Name) ++ "(" ++ Placeholders ++ ")",
+	{bin, 1, [{bin_element, 1, {string, 1, SQL}, default, default}]}.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -172,6 +217,31 @@ tests(_) ->
 		Result = pgerl:query(Conn, <<"SELECT $1::bytea AS val">>, { { blob, <<1,2,3,4>> } }),
 		?assertNotMatch({ error, _ }, Result),
 		?assertEqual(0, pgerl:is_null(Result, 0, 0))
+	 end),
+
+	 %% procs/2 returns a list of {Name, Arity} for the schema
+	 ?_test(begin
+		Conn = pgerl:init(conninfo(), "public"),
+		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgerl_test_add(a integer, b integer) RETURNS integer AS $$ BEGIN RETURN a + b; END; $$ LANGUAGE plpgsql">>, {}),
+		Ps = pgerl:procs(Conn, <<"public">>),
+		?assert(is_list(Ps)),
+		?assert(lists:keymember(pgerl_test_add, 1, Ps))
+	 end),
+
+	 %% generate/3 loads a module with wrapper functions for each proc
+	 ?_test(begin
+		Conn = pgerl:init(conninfo(), "public"),
+		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgerl_test_hello() RETURNS text AS $$ BEGIN RETURN 'hello'; END; $$ LANGUAGE plpgsql">>, {}),
+		ok = pgerl:generate(Conn, <<"public">>, pgtest),
+		Result = pgtest:pgerl_test_hello(Conn),
+		?assertEqual(<<"hello">>, pgerl:value(Result, 0, 0))
+	 end),
+
+	 %% generated wrapper passes arguments correctly
+	 ?_test(begin
+		Conn = pgerl:init(conninfo(), "public"),
+		Result = pgtest:pgerl_test_add(Conn, <<"3">>, <<"5">>),
+		?assertEqual(<<"8">>, pgerl:value(Result, 0, 0))
 	 end)
 	].
 
