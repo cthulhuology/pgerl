@@ -200,27 +200,28 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 	Pgerl_result* result = (Pgerl_result*)enif_alloc_resource(Pgerl_result_resource,sizeof(Pgerl_result));
 	result->res = PQexecParams(pgconn->conn,cmd,nparams,NULL,params,lengths,formats,0);
 
-	int status = 0;
-	switch(status = PQresultStatus(result->res)) {
-		case PGRES_TUPLES_OK:
-			// fprintf(stderr,"got result %p\n",result->res);
-			break;
-		default:
-			fprintf(stderr,"got status %p\n",status);
-	}
-
 	// free all the temporary allocations
 	for (int i = 0; i < nparams; ++i) {
-		if (allocations[i]) {
-			// fprintf(stderr,"releasing bin at %d\n",i);
+		if (allocations[i])
 			enif_release_binary(&bins[i]);
-		}
 	}
 
-	ERL_NIF_TERM term = enif_make_resource(env,result);	
-	enif_release_resource(result);
-
-	return term;
+	switch(PQresultStatus(result->res)) {
+		case PGRES_TUPLES_OK:   // SELECT and friends
+		case PGRES_COMMAND_OK:  // INSERT, UPDATE, DELETE, DDL
+		case PGRES_NONFATAL_ERROR: {  // notice or warning, result still usable
+			ERL_NIF_TERM term = enif_make_resource(env, result);
+			enif_release_resource(result);
+			return term;
+		}
+		case PGRES_FATAL_ERROR:
+		case PGRES_BAD_RESPONSE:
+		default: {
+			const char* err = PQresultErrorMessage(result->res);
+			enif_release_resource(result);
+			return pgerl_error(env, err);
+		}
+	}
 }
 
 static ERL_NIF_TERM pgerl_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
