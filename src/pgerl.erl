@@ -148,6 +148,30 @@ tests(_) ->
 		?assertEqual(<<"age">>, pgerl:fname(Result, 1)),
 		?assertEqual(<<"alice">>, pgerl:value(Result, 0, 0)),
 		?assertEqual(<<"30">>, pgerl:value(Result, 0, 1))
+	 end),
+
+	 %% atom null maps to SQL NULL
+	 ?_test(begin
+		Conn = pgerl:init(conninfo(), "public"),
+		Result = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { null }),
+		?assertNotMatch({ error, _ }, Result),
+		?assertEqual(1, pgerl:is_null(Result, 0, 0))
+	 end),
+
+	 %% atom other than null passed as string literal
+	 ?_test(begin
+		Conn = pgerl:init(conninfo(), "public"),
+		Result = pgerl:query(Conn, <<"SELECT $1::text AS val">>, { hello }),
+		?assertNotMatch({ error, _ }, Result),
+		?assertEqual(<<"hello">>, pgerl:value(Result, 0, 0))
+	 end),
+
+	 %% { blob, Binary } passed as binary format
+	 ?_test(begin
+		Conn = pgerl:init(conninfo(), "public"),
+		Result = pgerl:query(Conn, <<"SELECT $1::bytea AS val">>, { { blob, <<1,2,3,4>> } }),
+		?assertNotMatch({ error, _ }, Result),
+		?assertEqual(0, pgerl:is_null(Result, 0, 0))
 	 end)
 	].
 

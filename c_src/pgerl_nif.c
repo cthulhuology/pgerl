@@ -110,7 +110,7 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 				fprintf(stderr,"failed to allocate binary at %d\n",i);
 				return enif_make_badarg(env);
 			}
-			if (!enif_get_string(env, argv[i], bins[i].data, bins[i].size, ERL_NIF_UTF8)) {
+			if (!enif_get_string(env, param, bins[i].data, bins[i].size, ERL_NIF_UTF8)) {
 				fprintf(stderr,"bad string at %d\n", i);
 				return enif_make_badarg(env);
 			}
@@ -140,23 +140,43 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 			allocations[i] = 1;	
 			continue;
 		}
-		if (enif_is_map(env,param)) {	// probably json
-			fprintf(stderr,"todo implement maps\n");
-			params[i] = NULL;
-			lengths[i] = 0;
+		if (enif_is_tuple(env,param)) { // { blob, Binary } -> binary format
+			const ERL_NIF_TERM* elems;
+			int arity;
+			if (!enif_get_tuple(env, param, &arity, &elems) || arity != 2) {
+				fprintf(stderr,"bad tuple at %d\n",i);
+				return enif_make_badarg(env);
+			}
+			if (!enif_inspect_binary(env, elems[1], &bins[i])) {
+				fprintf(stderr,"bad tuple binary at %d\n",i);
+				return enif_make_badarg(env);
+			}
+			params[i] = (char*)bins[i].data;
+			lengths[i] = bins[i].size;
+			formats[i] = 1;
 			continue;
 		}
-		if (enif_is_tuple(env,param)) { // usually a tagged blob
-			fprintf(stderr,"todo implement blobs\n");
-			params[i] = NULL;
-			lengths[i] = 0;
-
-			continue;
-		}
-		if (enif_is_atom(env,param)) { // null or text
-			fprintf(stderr,"todo implement atoms\n");
-			params[i] = NULL;
-			lengths[i] = 0;
+		if (enif_is_atom(env,param)) { // null -> SQL NULL, atom -> string literal
+			char name[256];
+			if (!enif_get_atom(env, param, name, sizeof(name), ERL_NIF_UTF8)) {
+				fprintf(stderr,"bad atom at %d\n",i);
+				return enif_make_badarg(env);
+			}
+			if (strcmp(name, "null") == 0) {
+				params[i] = NULL;
+				lengths[i] = 0;
+				continue;
+			}
+			size_t len = strlen(name);
+			if (!enif_alloc_binary(len, &bins[i])) {
+				fprintf(stderr,"failed to allocate binary at %d\n",i);
+				return enif_make_badarg(env);
+			}
+			memcpy(bins[i].data, name, len);
+			bins[i].size = len;
+			params[i] = (char*)bins[i].data;
+			lengths[i] = bins[i].size;
+			allocations[i] = 1;
 			continue;
 		}
 		// all others
