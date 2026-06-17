@@ -85,13 +85,22 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 		ERL_NIF_TERM param = terms[i];
 		allocations[i] = 0;
 		formats[i] = 0;
-		if (enif_is_binary(env,param)) { // typically  text
-			if (!enif_inspect_binary(env,param,&bins[i])) {
+		if (enif_is_binary(env,param)) { // text param — PQexecParams needs null-terminated text
+			ErlNifBinary src;
+			if (!enif_inspect_binary(env,param,&src)) {
 				fprintf(stderr,"Bad binary at %d\n",i);
 				return enif_make_badarg(env);
 			}
-			params[i] = bins[i].data;
+			if (!enif_alloc_binary(src.size + 1, &bins[i])) {
+				fprintf(stderr,"failed to allocate binary at %d\n",i);
+				return enif_make_badarg(env);
+			}
+			memcpy(bins[i].data, src.data, src.size);
+			bins[i].data[src.size] = '\0';
+			bins[i].size = src.size;
+			params[i] = (char*)bins[i].data;
 			lengths[i] = bins[i].size;
+			allocations[i] = 1;
 			continue;
 		}
 		if (enif_is_empty_list(env,param)) { // null, empty string needs to come before list test

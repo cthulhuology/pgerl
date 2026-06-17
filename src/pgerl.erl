@@ -94,21 +94,21 @@ module_forms(Module, Procs) ->
 	[
 		{attribute, 1, module, Module},
 		{attribute, 1, export, Exports}
-		| [ proc_form(Name, Arity) || {Name, Arity} <- Procs ]
+		| [ proc_form(Module, Name, Arity) || {Name, Arity} <- Procs ]
 	].
 
-proc_form(Name, Arity) ->
+proc_form(Schema, Name, Arity) ->
 	ConnVar = {var, 1, 'Conn'},
 	ArgVars = [ {var, 1, list_to_atom("Arg" ++ integer_to_list(I))} || I <- lists:seq(1, Arity) ],
-	SQL = proc_sql(Name, Arity),
+	SQL = proc_sql(Schema, Name, Arity),
 	Call = {call, 1,
 		{remote, 1, {atom, 1, pgerl}, {atom, 1, query}},
 		[ConnVar, SQL, {tuple, 1, ArgVars}]},
 	{function, 1, Name, Arity+1, [{clause, 1, [ConnVar | ArgVars], [], [Call]}]}.
 
-proc_sql(Name, Arity) ->
+proc_sql(Schema, Name, Arity) ->
 	Placeholders = string:join([ "$" ++ integer_to_list(I) || I <- lists:seq(1, Arity) ], ","),
-	SQL = "SELECT " ++ atom_to_list(Name) ++ "(" ++ Placeholders ++ ")",
+	SQL = "SELECT " ++ atom_to_list(Schema) ++ "." ++ atom_to_list(Name) ++ "(" ++ Placeholders ++ ")",
 	{bin, 1, [{bin_element, 1, {string, 1, SQL}, default, default}]}.
 
 -ifdef(TEST).
