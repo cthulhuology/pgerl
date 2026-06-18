@@ -22,23 +22,19 @@
 -module(pgerl).
 -author({ "David J Goehrig", "dave@dloh.org" }).
 -copyright(<<"© 2026 David J. Goehrig"/utf8>>).
--export([ start/0, start/2, start_link/2, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3, procs/2, generate/2 ]).
+-export([ start/2, start_link/2, init/1, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3, procs/2, generate/2 ]).
 
 %%%-----------------------------------------------------------------------------
 %%% Public API
 %%%-----------------------------------------------------------------------------
 
-%% load the NIF shared library
-start() ->
-	erlang:load_nif(beamer:file("pgerl_nif"), 0).
-
-%% connect to Schema, generate module, register process; returns Pid
+%% spawn a process registered as Schema; returns Pid
 start(ConnInfo, Schema) ->
 	case erlang:load_nif(beamer:file("pgerl_nif"), 0) of
 		ok -> ok;
 		{ error, reload } -> ok
 	end,
-	spawn(fun() -> init_proc(ConnInfo, Schema) end).
+	spawn(?MODULE, init, [[ConnInfo, Schema]]).
 
 %% same as start/2 but links to the calling process
 start_link(ConnInfo, Schema) ->
@@ -46,7 +42,16 @@ start_link(ConnInfo, Schema) ->
 		ok -> ok;
 		{ error, reload } -> ok
 	end,
-	spawn_link(fun() -> init_proc(ConnInfo, Schema) end).
+	spawn_link(?MODULE, init, [[ConnInfo, Schema]]).
+
+%% process body: connect, register as Schema, generate module, loop
+init([ConnInfo, Schema]) ->
+	Conn = init(ConnInfo, Schema),
+	erlang:put(connection, Conn),
+	catch unregister(Schema),
+	register(Schema, self()),
+	generate(Conn, Schema),
+	loop().
 
 %% connect to postgres; Schema is an atom matching the pg schema name
 %% returns a connection resource or {error, Reason}
@@ -97,14 +102,6 @@ generate(Conn, Schema) ->
 %%%-----------------------------------------------------------------------------
 %%% Private
 %%%-----------------------------------------------------------------------------
-
-init_proc(ConnInfo, Schema) ->
-	Conn = init(ConnInfo, Schema),
-	erlang:put(connection, Conn),
-	catch unregister(Schema),
-	register(Schema, self()),
-	generate(Conn, Schema),
-	loop().
 
 loop() ->
 	receive
@@ -160,7 +157,8 @@ conninfo() ->
 	lists:flatten(io_lib:format("host=~s port=~s user=~s dbname=~s", [ Host, Port, User, DB ])).
 
 setup() ->
-	ok = pgerl:start(),
+	_Pid = pgerl:start(conninfo(), pgtest),
+	timer:sleep(100),
 	Conn = pgerl:init(conninfo(), pgtest),
 	pgerl:query(Conn, <<"CREATE SCHEMA IF NOT EXISTS pgtest">>, {}),
 	Conn.
