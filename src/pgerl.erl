@@ -22,7 +22,7 @@
 -module(pgerl).
 -author({ "David J Goehrig", "dave@dloh.org" }).
 -copyright(<<"© 2026 David J. Goehrig"/utf8>>).
--export([ start/0, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3, procs/2, generate/2 ]).
+-export([ start/0, start/2, start_link/2, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3, procs/2, generate/2 ]).
 
 %%%-----------------------------------------------------------------------------
 %%% Public API
@@ -31,6 +31,22 @@
 %% load the NIF shared library
 start() ->
 	erlang:load_nif(beamer:file("pgerl_nif"), 0).
+
+%% connect to Schema, generate module, register process; returns Pid
+start(ConnInfo, Schema) ->
+	case erlang:load_nif(beamer:file("pgerl_nif"), 0) of
+		ok -> ok;
+		{ error, reload } -> ok
+	end,
+	spawn(fun() -> init_proc(ConnInfo, Schema) end).
+
+%% same as start/2 but links to the calling process
+start_link(ConnInfo, Schema) ->
+	case erlang:load_nif(beamer:file("pgerl_nif"), 0) of
+		ok -> ok;
+		{ error, reload } -> ok
+	end,
+	spawn_link(fun() -> init_proc(ConnInfo, Schema) end).
 
 %% connect to postgres; Schema is an atom matching the pg schema name
 %% returns a connection resource or {error, Reason}
@@ -82,6 +98,25 @@ generate(Conn, Schema) ->
 %%% Private
 %%%-----------------------------------------------------------------------------
 
+init_proc(ConnInfo, Schema) ->
+	Conn = init(ConnInfo, Schema),
+	erlang:put(connection, Conn),
+	catch unregister(Schema),
+	register(Schema, self()),
+	generate(Conn, Schema),
+	loop().
+
+loop() ->
+	receive
+		{ From, SQL, Params } ->
+			Conn = erlang:get(connection),
+			Result = query(Conn, SQL, Params),
+			From ! { ok, Result },
+			loop();
+		stop ->
+			ok
+	end.
+
 decode_procs(_Result, N, N, Acc) ->
 	lists:reverse(Acc);
 decode_procs(Result, N, I, Acc) ->
@@ -90,7 +125,7 @@ decode_procs(Result, N, I, Acc) ->
 	decode_procs(Result, N, I+1, [{ Name, Arity } | Acc]).
 
 module_forms(Module, Procs) ->
-	Exports = [ {Name, Arity+1} || {Name, Arity} <- Procs ],
+	Exports = [ {Name, Arity} || {Name, Arity} <- Procs ],
 	[
 		{attribute, 1, module, Module},
 		{attribute, 1, export, Exports}
@@ -98,13 +133,16 @@ module_forms(Module, Procs) ->
 	].
 
 proc_form(Schema, Name, Arity) ->
-	ConnVar = {var, 1, 'Conn'},
 	ArgVars = [ {var, 1, list_to_atom("Arg" ++ integer_to_list(I))} || I <- lists:seq(1, Arity) ],
 	SQL = proc_sql(Schema, Name, Arity),
-	Call = {call, 1,
-		{remote, 1, {atom, 1, pgerl}, {atom, 1, query}},
-		[ConnVar, SQL, {tuple, 1, ArgVars}]},
-	{function, 1, Name, Arity+1, [{clause, 1, [ConnVar | ArgVars], [], [Call]}]}.
+	ResultVar = {var, 1, 'Result'},
+	Send = {op, 1, '!',
+		{atom, 1, Schema},
+		{tuple, 1, [{call, 1, {atom, 1, self}, []}, SQL, {tuple, 1, ArgVars}]}},
+	Recv = {'receive', 1, [
+		{clause, 1, [{tuple, 1, [{atom, 1, ok}, ResultVar]}], [], [ResultVar]}
+	]},
+	{function, 1, Name, Arity, [{clause, 1, ArgVars, [], [Send, Recv]}]}.
 
 proc_sql(Schema, Name, Arity) ->
 	Placeholders = string:join([ "$" ++ integer_to_list(I) || I <- lists:seq(1, Arity) ], ","),
@@ -232,20 +270,17 @@ tests(_) ->
 		?assert(lists:keymember(add, 1, Ps))
 	 end),
 
-	 %% generate/2 loads a module named after the schema with one wrapper per proc
+	 %% start/2 spawns process registered as Schema; generated wrappers need no Conn
 	 ?_test(begin
 		Conn = pgerl:init(conninfo(), pgtest),
 		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgtest.hello() RETURNS text AS $$ BEGIN RETURN 'hello'; END; $$ LANGUAGE plpgsql">>, {}),
-		ok = pgerl:generate(Conn, pgtest),
-		Result = pgtest:hello(Conn),
-		?assertEqual(<<"hello">>, pgerl:value(Result, 0, 0))
-	 end),
-
-	 %% generated wrapper passes arguments correctly
-	 ?_test(begin
-		Conn = pgerl:init(conninfo(), pgtest),
-		Result = pgtest:add(Conn, <<"3">>, <<"5">>),
-		?assertEqual(<<"8">>, pgerl:value(Result, 0, 0))
+		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgtest.add(a integer, b integer) RETURNS integer AS $$ BEGIN RETURN a + b; END; $$ LANGUAGE plpgsql">>, {}),
+		_Pid = pgerl:start(conninfo(), pgtest),
+		timer:sleep(100),
+		HelloResult = pgtest:hello(),
+		?assertEqual(<<"hello">>, pgerl:value(HelloResult, 0, 0)),
+		AddResult = pgtest:add(<<"3">>, <<"5">>),
+		?assertEqual(<<"8">>, pgerl:value(AddResult, 0, 0))
 	 end)
 	].
 
