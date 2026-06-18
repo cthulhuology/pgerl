@@ -30,7 +30,7 @@
 
 %% load the NIF shared library
 start() ->
-	erlang:load_nif("./pgerl_nif", 0).
+	erlang:load_nif(beamer:file("pgerl_nif"), 0).
 
 %% connect to postgres; Schema is an atom matching the pg schema name
 %% returns a connection resource or {error, Reason}
