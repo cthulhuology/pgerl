@@ -22,13 +22,13 @@
 -module(pgerl).
 -author({ "David J Goehrig", "dave@dloh.org" }).
 -copyright(<<"© 2026 David J. Goehrig"/utf8>>).
--export([ start/2, start_link/2, init/1, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3, procs/2, generate/2 ]).
+-export([ start/2, start_link/2, init/1, init/2, status/1, query/3, ntuples/1, nfields/1, fname/2, value/3, is_null/3, functions/2, generate/2 ]).
 
 %%%-----------------------------------------------------------------------------
 %%% Public API
 %%%-----------------------------------------------------------------------------
 
-%% spawn a process registered as Schema; returns Pid
+%% spawn a Pid registered as Schema
 start(ConnInfo, Schema) ->
 	case erlang:load_nif(beamer:file("pgerl_nif"), 0) of
 		ok -> ok;
@@ -36,7 +36,7 @@ start(ConnInfo, Schema) ->
 	end,
 	spawn(?MODULE, init, [[ConnInfo, Schema]]).
 
-%% same as start/2 but links to the calling process
+%% spawn_link a linked Pid registered as Schema  
 start_link(ConnInfo, Schema) ->
 	case erlang:load_nif(beamer:file("pgerl_nif"), 0) of
 		ok -> ok;
@@ -44,7 +44,7 @@ start_link(ConnInfo, Schema) ->
 	end,
 	spawn_link(?MODULE, init, [[ConnInfo, Schema]]).
 
-%% process body: connect, register as Schema, generate module, loop
+%% initialize the stored procedure wrapper
 init([ConnInfo, Schema]) ->
 	Conn = init(ConnInfo, Schema),
 	erlang:put(connection, Conn),
@@ -53,48 +53,33 @@ init([ConnInfo, Schema]) ->
 	generate(Conn, Schema),
 	loop().
 
-%% connect to postgres; Schema is an atom matching the pg schema name
-%% returns a connection resource or {error, Reason}
+%% guard against nifs not loaded
 init(_ConnInfo, _Schema) ->
 	error(nif_not_loaded).
-
-%% returns ok or {error, Reason}
 status(_Conn) ->
 	error(nif_not_loaded).
-
-%% execute a parameterized query; Params is a tuple of binaries/integers/[]
-%% returns a PGresult resource
 query(_Conn, _Command, _Params) ->
 	error(nif_not_loaded).
-
-%% number of rows in a PGresult resource
 ntuples(_Result) ->
 	error(nif_not_loaded).
-
-%% number of columns in a PGresult resource
 nfields(_Result) ->
 	error(nif_not_loaded).
-
-%% column name at index Col (0-based)
 fname(_Result, _Col) ->
 	error(nif_not_loaded).
-
-%% cell value at Row, Col (0-based), returned as binary
 value(_Result, _Row, _Col) ->
 	error(nif_not_loaded).
-
-%% true if the cell at Row, Col is SQL NULL
 is_null(_Result, _Row, _Col) ->
 	error(nif_not_loaded).
 
-%% list all stored procedures in Schema (atom), returns [{ Name, Arity }]
-procs(Conn, Schema) ->
+%% 
+functions(Conn, Schema) ->
 	Result = query(Conn, <<"SELECT proc.proname, proc.pronargs FROM pg_proc proc JOIN pg_namespace namesp ON proc.pronamespace = namesp.oid WHERE namesp.nspname = $1 ORDER BY proc.proname">>, { atom_to_binary(Schema, utf8) }),
-	decode_procs(Result, ntuples(Result), 0, []).
+	params(Result, ntuples(Result), 0, []).
 
 %% generate and load an Erlang module named Schema wrapping all procs in that schema
 generate(Conn, Schema) ->
-	Forms = module_forms(Schema, procs(Conn, Schema)),
+	Funs = functions(Conn,Schema),
+	Forms = forms(Schema, Funs),
 	{ok, Schema, Binary} = compile:forms(Forms, []),
 	{module, Schema} = code:load_binary(Schema, atom_to_list(Schema) ++ ".erl", Binary),
 	ok.
@@ -114,38 +99,40 @@ loop() ->
 			ok
 	end.
 
-decode_procs(_Result, N, N, Acc) ->
-	lists:reverse(Acc);
-decode_procs(Result, N, I, Acc) ->
+params(_Result, N, N, Acc) ->
+	Acc;
+params(Result, N, I, Acc) ->
 	Name = binary_to_atom(value(Result, I, 0), utf8),
 	Arity = binary_to_integer(value(Result, I, 1)),
-	decode_procs(Result, N, I+1, [{ Name, Arity } | Acc]).
+	params(Result, N, I+1, [{ Name, Arity } | Acc]).
 
-module_forms(Module, Procs) ->
-	Exports = [ {Name, Arity} || {Name, Arity} <- Procs ],
+forms(Module, Funs) ->
+	Exports = [ {Name, Arity} || {Name, Arity} <- Funs ],
 	[
 		{attribute, 1, module, Module},
 		{attribute, 1, export, Exports}
-		| [ proc_form(Module, Name, Arity) || {Name, Arity} <- Procs ]
+		| [ form(Module, Name, Arity) || {Name, Arity} <- Funs ]
 	].
 
-proc_form(Schema, Name, Arity) ->
-	ArgVars = [ {var, 1, list_to_atom("Arg" ++ integer_to_list(I))} || I <- lists:seq(1, Arity) ],
-	SQL = proc_sql(Schema, Name, Arity),
-	ResultVar = {var, 1, 'Result'},
+form(Schema, Name, Arity) ->
+	Params = [ {var, 1, list_to_atom("Arg" ++ integer_to_list(I))} || I <- lists:seq(1, Arity) ],
+	SQL = sql(Schema, Name, Arity),
+	Result = {var, 1, 'Result'},
 	Send = {op, 1, '!',
 		{atom, 1, Schema},
-		{tuple, 1, [{call, 1, {atom, 1, self}, []}, SQL, {tuple, 1, ArgVars}]}},
+		{tuple, 1, [{call, 1, {atom, 1, self}, []}, SQL, {tuple, 1, Params }]}},
 	Recv = {'receive', 1, [
-		{clause, 1, [{tuple, 1, [{atom, 1, ok}, ResultVar]}], [], [ResultVar]}
+		{clause, 1, [{tuple, 1, [{atom, 1, ok}, Result]}], [], [Result]}
 	]},
-	{function, 1, Name, Arity, [{clause, 1, ArgVars, [], [Send, Recv]}]}.
+	{function, 1, Name, Arity, [{clause, 1, Params, [], [Send, Recv]}]}.
 
-proc_sql(Schema, Name, Arity) ->
+sql(Schema, Name, Arity) ->
 	Placeholders = string:join([ "$" ++ integer_to_list(I) || I <- lists:seq(1, Arity) ], ","),
 	SQL = "SELECT " ++ atom_to_list(Schema) ++ "." ++ atom_to_list(Name) ++ "(" ++ Placeholders ++ ")",
 	{bin, 1, [{bin_element, 1, {string, 1, SQL}, default, default}]}.
 
+
+%% Integration tests, requires Postgres to be running to run tests!
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -259,11 +246,11 @@ tests(_) ->
 		?assertEqual(0, pgerl:is_null(Result, 0, 0))
 	 end),
 
-	 %% procs/2 returns a list of {Name, Arity} for the schema
+	 %% functions/2 returns a list of {Name, Arity} for the schema
 	 ?_test(begin
 		Conn = pgerl:init(conninfo(), pgtest),
 		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgtest.add(a integer, b integer) RETURNS integer AS $$ BEGIN RETURN a + b; END; $$ LANGUAGE plpgsql">>, {}),
-		Ps = pgerl:procs(Conn, pgtest),
+		Ps = pgerl:functions(Conn, pgtest),
 		?assert(is_list(Ps)),
 		?assert(lists:keymember(add, 1, Ps))
 	 end),
@@ -273,7 +260,8 @@ tests(_) ->
 		Conn = pgerl:init(conninfo(), pgtest),
 		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgtest.hello() RETURNS text AS $$ BEGIN RETURN 'hello'; END; $$ LANGUAGE plpgsql">>, {}),
 		pgerl:query(Conn, <<"CREATE OR REPLACE FUNCTION pgtest.add(a integer, b integer) RETURNS integer AS $$ BEGIN RETURN a + b; END; $$ LANGUAGE plpgsql">>, {}),
-		_Pid = pgerl:start(conninfo(), pgtest),
+		%% regenerate the functions
+		_Pid = pgerl:generate(Conn, pgtest),
 		timer:sleep(100),
 		HelloResult = pgtest:hello(),
 		?assertEqual(<<"hello">>, pgerl:value(HelloResult, 0, 0)),

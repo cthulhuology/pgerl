@@ -180,23 +180,23 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 
 		// null -> SQL NULL, atom -> string literal
 		if (enif_is_atom(env,param)) { 
-			char name[256];
-			if (!enif_get_atom(env, param, name, sizeof(name), ERL_NIF_UTF8)) {
+			char atom[256];
+			int atom_len = 0;
+			if (!(atom_len = enif_get_atom(env, param, atom, sizeof(atom), ERL_NIF_UTF8))) {
 				fprintf(stderr,"bad atom at %d\n",i);
 				return enif_make_badarg(env);
 			}
-			if (strcmp(name, "null") == 0) {
+			if (strcmp(atom, "null") == 0) {
 				params[i] = NULL;
 				lengths[i] = 0;
 				continue;
 			}
-			size_t len = strlen(name);
-			if (!enif_alloc_binary(len, &bins[i])) {
+			if (!enif_alloc_binary(atom_len, &bins[i])) {
 				fprintf(stderr,"failed to allocate binary at %d\n",i);
 				return enif_make_badarg(env);
 			}
-			memcpy(bins[i].data, name, len);
-			bins[i].size = len;
+			memcpy(bins[i].data, atom, atom_len);
+			bins[i].size = atom_len;
 			params[i] = (char*)bins[i].data;
 			lengths[i] = bins[i].size;
 			allocations[i] = 1;
@@ -385,6 +385,8 @@ static ERL_NIF_TERM pgerl_value(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 	ErlNifBinary value;
 	value.data = PQgetvalue(res->res,row,column);
 	value.size = PQgetlength(res->res,row,column);
+//	fprintf(stderr,"Result: %s\n", value.data);
+//	fprintf(stderr,"Length: %d\n", value.size);
 
 	ERL_NIF_TERM term = enif_make_resource_binary(env,res,value.data,value.size);
 	return term;
