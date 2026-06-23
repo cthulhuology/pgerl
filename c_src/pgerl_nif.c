@@ -4,6 +4,7 @@
 #include "erl_nif.h"
 #include "libpq-fe.h"
 
+// Erlang resource wrappers
 typedef struct {
 	PGconn* conn;
 } Pgerl_connection;
@@ -12,29 +13,29 @@ typedef struct {
 	PGresult* res;
 } Pgerl_result;
 
+// Erlang resource types
 static ErlNifResourceType* Pgerl_connection_resource = NULL;
 static ErlNifResourceType* Pgerl_result_resource = NULL;
 
+// { error, "your error message" }
 static ERL_NIF_TERM pgerl_error(ErlNifEnv* env, const char* reason) {
 	return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_string(env,reason, ERL_NIF_UTF8));
 }
 
+// Erlang resource destructors
 static void pgerl_conn_destructor(ErlNifEnv* env, void* obj) {
 	Pgerl_connection* res = (Pgerl_connection*)obj;
-//	fprintf(stderr,"pgerl_conn_destructor on %p\n", obj);
 	if (!res || !res->conn) return;
 	PQfinish(res->conn);
-//	fprintf(stderr,"pgerl_conn_destructor finished %p\n", obj);
 }
 
 static void pgerl_result_destructor(ErlNifEnv* env, void* obj) {
 	Pgerl_result* res = (Pgerl_result*)obj;
-//	fprintf(stderr,"pgerl_result_destructor on %p\n", obj);
 	if (!res || !res->res) return;
 	PQclear(res->res);
-//	fprintf(stderr,"pgerl_result_destructor finished %p\n", obj);
 }
 
+// Erlang resource constructor
 static int pgerl_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM load_info) {
 	ErlNifResourceFlags flags = (ErlNifResourceFlags)(ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER);
 	Pgerl_connection_resource = enif_open_resource_type(env,NULL,"PGconn",pgerl_conn_destructor,flags,NULL);
@@ -43,6 +44,7 @@ static int pgerl_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM load_info) {
 	return 0;
 }
 
+// PQstatus wrapper
 static ERL_NIF_TERM pgerl_status(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
 	Pgerl_connection* res = NULL;
 
@@ -56,6 +58,7 @@ static ERL_NIF_TERM pgerl_status(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
 	return enif_make_atom(env,"ok");
 }
 
+// PQexecParams wrapper -> PGresult resource
 static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
 	unsigned int nparams = 0;
 	const ERL_NIF_TERM* terms;
@@ -85,7 +88,9 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 		ERL_NIF_TERM param = terms[i];
 		allocations[i] = 0;
 		formats[i] = 0;
-		if (enif_is_binary(env,param)) { // text param — PQexecParams needs null-terminated text
+
+		// assume binaries will be the norm in the params tuples
+		if (enif_is_binary(env,param)) { 
 			ErlNifBinary src;
 			if (!enif_inspect_binary(env,param,&src)) {
 				fprintf(stderr,"Bad binary at %d\n",i);
@@ -103,13 +108,16 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 			allocations[i] = 1;
 			continue;
 		}
-		if (enif_is_empty_list(env,param)) { // null, empty string needs to come before list test
+
+		// null, empty string needs to come before list test
+		if (enif_is_empty_list(env,param)) { 
 			params[i] = NULL;
 			lengths[i] = 0;
 			continue;
 		}
 
-		if (enif_is_list(env,param)) { // typically text
+		// list as text support, consider changing to support [ numbers... ]
+		if (enif_is_list(env,param)) {
 			unsigned int bin_len = 0;
 			if (!enif_get_list_length(env,param,&bin_len)) {
 				fprintf(stderr,"bad list length at %d\n",i);
@@ -128,6 +136,8 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 			allocations[i] = 1;
 			continue;
 		}
+
+		// raw numbers that we didn't convert to binaries before calling
 		if (enif_is_number(env,param)) {
 			ErlNifSInt64 inum;
 			double dnum;
@@ -149,7 +159,9 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 			allocations[i] = 1;	
 			continue;
 		}
-		if (enif_is_tuple(env,param)) { // { blob, Binary } -> binary format
+
+		// { blob, Binary } -> for raw binaries w/ no string interpolation
+		if (enif_is_tuple(env,param)) { 
 			const ERL_NIF_TERM* elems;
 			int arity;
 			if (!enif_get_tuple(env, param, &arity, &elems) || arity != 2) {
@@ -165,7 +177,9 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 			formats[i] = 1;
 			continue;
 		}
-		if (enif_is_atom(env,param)) { // null -> SQL NULL, atom -> string literal
+
+		// null -> SQL NULL, atom -> string literal
+		if (enif_is_atom(env,param)) { 
 			char name[256];
 			if (!enif_get_atom(env, param, name, sizeof(name), ERL_NIF_UTF8)) {
 				fprintf(stderr,"bad atom at %d\n",i);
@@ -193,6 +207,7 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 		return enif_make_badarg(env);
 	}
 
+	// construct the SQL string
 	char cmd[command.size + 1];
 	memcpy(cmd, command.data, command.size);
 	cmd[command.size] = '\0';
@@ -206,14 +221,17 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 			enif_release_binary(&bins[i]);
 	}
 
+	//  we're using a switch so we can cascade statuses
 	switch(PQresultStatus(result->res)) {
-		case PGRES_TUPLES_OK:   // SELECT and friends
-		case PGRES_COMMAND_OK:  // INSERT, UPDATE, DELETE, DDL
-		case PGRES_NONFATAL_ERROR: {  // notice or warning, result still usable
+		// happy path
+		case PGRES_TUPLES_OK:		// SELECT and friends
+		case PGRES_COMMAND_OK:		// INSERT, UPDATE, DELETE, DDL
+		case PGRES_NONFATAL_ERROR: {	// NOTICE or WARNING
 			ERL_NIF_TERM term = enif_make_resource(env, result);
 			enif_release_resource(result);
 			return term;
 		}
+		// oops path
 		case PGRES_FATAL_ERROR:
 		case PGRES_BAD_RESPONSE:
 		default: {
@@ -224,6 +242,7 @@ static ERL_NIF_TERM pgerl_query(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 	}
 }
 
+// Connection wrapper takes ConnInfo string and a schema atom -> PGconn
 static ERL_NIF_TERM pgerl_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
 	unsigned int conninfo_size;
 
@@ -240,7 +259,6 @@ static ERL_NIF_TERM pgerl_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 	memset(conninfo,0,conninfo_size+1);
 	if (0 >= enif_get_string(env, argv[0], conninfo, sizeof(conninfo), ERL_NIF_UTF8))
 		return enif_make_badarg(env);
-
 
 	char schema[256];
 	if (!enif_get_atom(env, argv[1], schema, sizeof(schema), ERL_NIF_UTF8))
@@ -260,6 +278,7 @@ static ERL_NIF_TERM pgerl_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 	return term;
 }
 
+// PQntuples wrapper
 static ERL_NIF_TERM pgerl_ntuples(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
 	Pgerl_result* res;
 
@@ -276,6 +295,7 @@ static ERL_NIF_TERM pgerl_ntuples(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 	return term;
 }
 
+// PQnfields wrapper
 static ERL_NIF_TERM pgerl_nfields(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
 	Pgerl_result* res;
 
@@ -292,6 +312,7 @@ static ERL_NIF_TERM pgerl_nfields(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 	return term;
 }
 
+// PQfname wrapper
 static ERL_NIF_TERM pgerl_fname(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
 	Pgerl_result* res;
 	int field;
@@ -315,6 +336,7 @@ static ERL_NIF_TERM pgerl_fname(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 	return term;
 }
 
+// PQgetisnull wrapper
 static ERL_NIF_TERM pgerl_is_null(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
 	Pgerl_result* res;
 	int row,column;
@@ -338,6 +360,7 @@ static ERL_NIF_TERM pgerl_is_null(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 	return term;
 }
 
+// PQgetvalue & PQgetlength wrapper
 static ERL_NIF_TERM pgerl_value(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[] ) {
 	Pgerl_result* res;
 	int row,column;
@@ -367,6 +390,7 @@ static ERL_NIF_TERM pgerl_value(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 	return term;
 }
 
+// NIF vtable
 static ErlNifFunc nif_funcs[] = {
 	{ "init", 2, pgerl_init },
 	{ "status", 1, pgerl_status },
