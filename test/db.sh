@@ -24,7 +24,7 @@ sudo -u postgres $PGROOT/bin/initdb --auth-local=trust --auth-host=trust -D $DB_
 
 sudo -u postgres sed -i "s/#ssl = off/ssl = off/" $DB_FILES/postgresql.conf
 sleep 1
-sudo -u postgres $PGROOT/bin/pg_ctl -D $DB_FILES -l logfile start
+sudo -u postgres $PGROOT/bin/pg_ctl -D $DB_FILES  start
 sleep 1
 
 $PGROOT/bin/createdb -p $DB_PORT -h $DB_HOST -U $DB_USER $DB_NAME

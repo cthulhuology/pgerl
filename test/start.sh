@@ -11,4 +11,4 @@ PGROOT=/usr/local/pgsql
 
 LOOP=$(sudo losetup -f --show db.img)
 sudo mount $LOOP $DB_FILES
-sudo -u postgres $PGROOT/bin/pg_ctl -D $DB_FILES -l logfile start
+sudo -u postgres $PGROOT/bin/pg_ctl -D $DB_FILES  start
