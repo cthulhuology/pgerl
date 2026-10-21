@@ -16,3 +16,9 @@ db: test/db.img
 	
 start:
 	cd test && sudo ./start.sh
+
+conn:
+	sudo -u postgres /usr/local/pgsql/bin/psql
+
+stop:
+

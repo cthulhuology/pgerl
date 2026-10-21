@@ -30,25 +30,35 @@
 
 %% spawn a Pid registered as Schema
 start(ConnInfo, Schema) ->
-	case erlang:load_nif(beamer:file("pgerl_nif"), 0) of
-		ok -> ok;
-		{ error, reload } -> ok
-	end,
+	load_nif(),
 	spawn(?MODULE, init, [[ConnInfo, Schema]]).
 
 %% spawn_link a linked Pid registered as Schema  
 start_link(ConnInfo, Schema) ->
-	case erlang:load_nif(beamer:file("pgerl_nif"), 0) of
-		ok -> ok;
-		{ error, reload } -> ok
-	end,
+	load_nif(),
 	spawn_link(?MODULE, init, [[ConnInfo, Schema]]).
+
+%% OTP 20+ returns {error,{reload,Reason}} for already-loaded NIFs.
+load_nif() ->
+	case erlang:load_nif(beamer:file("pgerl_nif"), 0) of
+		ok ->
+			ok;
+		{ error, reload } ->
+			ok;
+		{ error, { reload, _ } } ->
+			ok
+	end.
 
 %% initialize the stored procedure wrapper
 init([ConnInfo, Schema]) ->
 	Conn = init(ConnInfo, Schema),
 	erlang:put(connection, Conn),
-	catch unregister(Schema),
+	case whereis(Schema) of
+		undefined ->
+			ok;
+		_Old ->
+			unregister(Schema)
+	end,
 	register(Schema, self()),
 	generate(Conn, Schema),
 	loop().
